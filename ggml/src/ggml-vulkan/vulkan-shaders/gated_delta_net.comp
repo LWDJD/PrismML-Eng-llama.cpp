@@ -32,9 +32,13 @@ layout(push_constant) uniform Parameters {
     uint neq1, rq3;
     float scale;
     uint K;
-    // exp/gdn-rows-vk: 1 = `states` (binding 5) is the raw 2D recurrent cache view
-    // and each sequence's live state is read at row data_rows[seq] (binding 7);
-    // 0 = legacy gathered form (states is [S_v, S_v, H, n_seqs]).
+    // exp/gdn-rows-vk: how `states` (binding 5) is read and where the new state goes.
+    //   0 = legacy: gathered [S_v, S_v, H, n_seqs] input, new state written to the
+    //       snapshot region of the output (the caller copies it back).
+    //   1 = rows: 2D cache view, this seq's live state read at row data_rows[seq],
+    //       new state still written to the output snapshot region (ring path).
+    //   2 = in-place: same rows read, but the new state is written straight back to
+    //       the same cache row. The output then carries attention scores only.
     uint state_rows;
 };
 
@@ -43,7 +47,8 @@ layout(binding = 1) readonly  buffer KBuf     { FLOAT_TYPE data_k[];     };
 layout(binding = 2) readonly  buffer VBuf     { FLOAT_TYPE data_v[];     };
 layout(binding = 3) readonly  buffer GBuf     { FLOAT_TYPE data_g[];     };
 layout(binding = 4) readonly  buffer BetaBuf  { FLOAT_TYPE data_beta[];  };
-layout(binding = 5) readonly  buffer StateBuf { FLOAT_TYPE data_state[]; };
+// exp/gdn-rows-vk: writable in mode 2 (in-place state update).
+layout(binding = 5)           buffer StateBuf { FLOAT_TYPE data_state[]; };
 layout(binding = 6)           buffer DstBuf   { FLOAT_TYPE data_dst[];   };
 // rows-indexed state read (see push constant `state_rows`): each sequence's live
 // state row inside the 2D recurrent cache view. Unused when state_rows == 0, so in
@@ -110,9 +115,9 @@ void main() {
     const uint iq3 = seq_id / rq3;
 
     const uint state_size = S_V * S_V;
-    // legacy: state is the gathered [S_v, S_v, H, n_seqs] form, per-seq stride H*D
-    // rows:   state is the 2D cache view, this seq's live state at row data_rows[seq]
-    //         (head head_id occupies [head_id*state_size, +state_size) inside that row)
+    // state_rows 0 = gathered input at per-seq stride H*D
+    //            1/2 = 2D cache view, this seq's live state at row data_rows[seq]
+    //                  (head head_id occupies [head_id*state_size, +state_size) in it)
     const uint state_row_in  = (state_rows != 0u) ? uint(data_rows[seq_id]) : seq_id;
     const uint state_in_base = (state_row_in * H + head_id) * state_size;
     // output state layout per slot: same per-(seq,head) offset as the single-slot case.
@@ -192,7 +197,13 @@ void main() {
         }
     }
 
-    if (K == 1u) {
+    if (state_rows == 2u) {
+        // in-place: the new state goes straight back to the row we read it from, so the
+        // caller needs neither a gather before the op nor a copy after it.
+        [[unroll]] for (uint r = 0; r < ROWS_PER_LANE; r++) {
+            data_state[state_in_base + col * S_V + r * LANES_PER_COLUMN + lane] = s_shard[r];
+        }
+    } else if (K == 1u) {
         [[unroll]] for (uint r = 0; r < ROWS_PER_LANE; r++) {
             data_dst[s_off + state_out_base + col * S_V + r * LANES_PER_COLUMN + lane] = s_shard[r];
         }

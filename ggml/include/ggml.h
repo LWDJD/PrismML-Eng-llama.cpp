@@ -2620,6 +2620,26 @@ extern "C" {
             struct ggml_tensor  * rows,
             int                   n_snap_slots);
 
+    // rows-indexed state read + in-place state update: like ggml_gated_delta_net_rows,
+    // except the updated state is written straight back to the same cache row instead of
+    // into a snapshot region of the output. The output therefore carries the attention
+    // scores only: [S_v*H_v, n_tokens*n_seqs]. Removes both the per-layer get_rows
+    // gather and the write-back copy that the default (non-rollback) decode path needs.
+    //
+    // Correctness: the gated-delta-net update is elementwise inside each (head, column)
+    // block -- the new state values depend only on that block's previous values, which
+    // the kernel keeps in registers across the whole token loop -- so reading and writing
+    // the same location is safe.
+    GGML_API struct ggml_tensor * ggml_gated_delta_net_rows_inplace(
+            struct ggml_context * ctx,
+            struct ggml_tensor  * q,
+            struct ggml_tensor  * k,
+            struct ggml_tensor  * v,
+            struct ggml_tensor  * g,
+            struct ggml_tensor  * beta,
+            struct ggml_tensor  * states,
+            struct ggml_tensor  * rows);
+
     // fold the per-head gate activations into a gated_delta_net op (scalar gate only):
     //   beta -> sigmoid(beta),  g -> a[h] * softplus(g + dt_bias[h])
     // dt_bias and a are F32 with H_v elements; removes four elementwise ops per layer

@@ -6423,6 +6423,61 @@ struct ggml_tensor * ggml_gated_delta_net_rows(
     return result;
 }
 
+struct ggml_tensor * ggml_gated_delta_net_rows_inplace(
+        struct ggml_context * ctx,
+        struct ggml_tensor  * q,
+        struct ggml_tensor  * k,
+        struct ggml_tensor  * v,
+        struct ggml_tensor  * g,
+        struct ggml_tensor  * beta,
+        struct ggml_tensor  * states,
+        struct ggml_tensor  * rows) {
+    GGML_ASSERT(ggml_is_contiguous_rows(q));
+    GGML_ASSERT(ggml_is_contiguous_rows(k));
+    GGML_ASSERT(ggml_is_contiguous_rows(v));
+    GGML_ASSERT(ggml_is_contiguous(g));
+    GGML_ASSERT(ggml_is_contiguous(beta));
+    GGML_ASSERT(ggml_is_contiguous(states));
+    GGML_ASSERT(ggml_is_contiguous(rows));
+
+    GGML_ASSERT(q->type == GGML_TYPE_F32);
+    GGML_ASSERT(k->type == GGML_TYPE_F32);
+    GGML_ASSERT(v->type == GGML_TYPE_F32);
+    GGML_ASSERT(g->type == GGML_TYPE_F32);
+    GGML_ASSERT(beta->type == GGML_TYPE_F32);
+    GGML_ASSERT(states->type == GGML_TYPE_F32);
+    GGML_ASSERT(rows->type == GGML_TYPE_I32);
+
+    const int64_t S_v      = v->ne[0];
+    const int64_t H        = v->ne[1];
+    const int64_t n_tokens = v->ne[2];
+    const int64_t n_seqs   = v->ne[3];
+
+    GGML_ASSERT(g->ne[0] == 1 || g->ne[0] == S_v);
+    GGML_ASSERT(beta->ne[0] == 1);
+
+    GGML_ASSERT(states->ne[0] == S_v * S_v * H);
+    GGML_ASSERT(rows->ne[0] == n_seqs);
+
+    // no snapshot region: the new state is written back into `states` itself
+    const int64_t ne[4] = { S_v * H, n_tokens * n_seqs, 1, 1 };
+    struct ggml_tensor * result = ggml_new_tensor(ctx, GGML_TYPE_F32, 4, ne);
+
+    // K = 0 marks the in-place variant (no snapshots are produced)
+    ggml_set_op_params_i32(result, 0, 0);
+
+    result->op     = GGML_OP_GATED_DELTA_NET;
+    result->src[0] = q;
+    result->src[1] = k;
+    result->src[2] = v;
+    result->src[3] = g;
+    result->src[4] = beta;
+    result->src[5] = states;
+    result->src[6] = rows;
+
+    return result;
+}
+
 void ggml_gated_delta_net_set_raw_gates(
         struct ggml_tensor  * gdn,
         struct ggml_tensor  * dt_bias,

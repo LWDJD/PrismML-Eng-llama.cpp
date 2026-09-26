@@ -553,9 +553,41 @@ ggml_tensor * llm_build_delta_net_base::build_recurrent_attn(
 
     const bool keep = cparams.n_rs_seq > 0;
 
-    GGML_ASSERT(state_rows == nullptr || keep); // rows mode is a ring-path optimization
+    // state_rows is used by two paths: the rollback ring (keep) writes snapshots, and the
+    // plain decode path (no rollback) updates the cache row in place. Either way the op
+    // needs the 2D cache view, not the gathered 4D form.
+    GGML_ASSERT(state_rows == nullptr || keep || cparams.n_rs_seq == 0);
 
     if (!keep) {
+        if (state_rows != nullptr) {
+            // in-place: the op reads each sequence's live state from the cache row and
+            // writes the updated state straight back to it, so the graph needs neither a
+            // get_rows gather before it nor a copy after it.
+            const bool raw_ip = gdn_raw_beta && gdn_raw_alpha && gdn_raw_dt_bias && gdn_raw_a;
+            ggml_tensor * gg_ip = raw_ip ? gdn_raw_alpha : g;
+            ggml_tensor * bb_ip = raw_ip ? gdn_raw_beta  : b;
+
+            ggml_tensor * gdn_ip = ggml_gated_delta_net_rows_inplace(ctx0, q, k, v, gg_ip, bb_ip, s, state_rows);
+            if (raw_ip) {
+                ggml_gated_delta_net_set_raw_gates(gdn_ip, gdn_raw_dt_bias, gdn_raw_a);
+            }
+            if (n_seq_tokens > 1) {
+                res->add_fused_node({LLM_FUSED_OP_GDN_CH, gdn_ip, il});
+            } else {
+                res->add_fused_node({LLM_FUSED_OP_GDN_AR, gdn_ip, il});
+            }
+
+            ggml_tensor * output = ggml_view_4d(ctx0, gdn_ip,
+                S_v, H_v, n_seq_tokens, n_seqs,
+                ggml_row_size(gdn_ip->type, S_v),
+                ggml_row_size(gdn_ip->type, S_v * H_v),
+                ggml_row_size(gdn_ip->type, S_v * H_v * n_seq_tokens),
+                0);
+            cb(output, "attn_output", il);
+
+            return output;
+        }
+
         auto attn_out = build_delta_net(q, k, v, g, b, s, il);
         ggml_tensor * output    = attn_out.first;
         ggml_tensor * new_state = attn_out.second;

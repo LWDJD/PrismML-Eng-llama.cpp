@@ -12964,11 +12964,14 @@ static void ggml_vk_gated_delta_net(ggml_backend_vk_context * ctx, vk_context& s
 
     // exp/gdn-rows-vk: rows mode. src[6] (I32, n_seqs) carries the recurrent cache row
     // holding each sequence's live state; `states` (src[5]) is then the raw 2D cache
-    // view instead of a gathered [S_v, S_v, H, n_seqs] tensor. The shader never reads
-    // the buffer (binding 7) unless the flag is set, so in the legacy path we simply
-    // alias the state buffer there to keep the descriptor set well-formed.
-    const bool state_rows_mode = (dst->src[6] != nullptr);
-    vk_subbuffer rows_buf = state_rows_mode ? ggml_vk_tensor_subbuffer(ctx, dst->src[6]) : src_buf[5];
+    // view instead of a gathered [S_v, S_v, H, n_seqs] tensor.
+    //   mode 1: new state written to the output snapshot region (ring/rollback path)
+    //   mode 2: new state written straight back to the same cache row (K == 0)
+    // The shader never reads binding 7 unless a rows mode is active, so in the legacy
+    // path we simply alias the state buffer there to keep the descriptor set well-formed.
+    const bool     rows_read   = (dst->src[6] != nullptr);
+    const uint32_t rows_mode   = rows_read ? (K == 0 ? 2u : 1u) : 0u;
+    vk_subbuffer   rows_buf    = rows_read ? ggml_vk_tensor_subbuffer(ctx, dst->src[6]) : src_buf[5];
 
     const uint32_t sq1 = (uint32_t)(src_q->nb[1] / sizeof(float));
     const uint32_t sq2 = (uint32_t)(src_q->nb[2] / sizeof(float));
@@ -12992,7 +12995,7 @@ static void ggml_vk_gated_delta_net(ggml_backend_vk_context * ctx, vk_context& s
         neq1, rq3,
         scale,
         K,
-        (uint32_t) (state_rows_mode ? 1 : 0)
+        rows_mode
     };
 
     // binding order: 0..5 = src[0..5], 6 = dst, 7 = rows
