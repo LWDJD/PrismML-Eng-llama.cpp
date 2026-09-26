@@ -32,6 +32,10 @@ layout(push_constant) uniform Parameters {
     uint neq1, rq3;
     float scale;
     uint K;
+    // exp/gdn-rows-vk: 1 = `states` (binding 5) is the raw 2D recurrent cache view
+    // and each sequence's live state is read at row data_rows[seq] (binding 7);
+    // 0 = legacy gathered form (states is [S_v, S_v, H, n_seqs]).
+    uint state_rows;
 };
 
 layout(binding = 0) readonly  buffer QBuf     { FLOAT_TYPE data_q[];     };
@@ -41,6 +45,10 @@ layout(binding = 3) readonly  buffer GBuf     { FLOAT_TYPE data_g[];     };
 layout(binding = 4) readonly  buffer BetaBuf  { FLOAT_TYPE data_beta[];  };
 layout(binding = 5) readonly  buffer StateBuf { FLOAT_TYPE data_state[]; };
 layout(binding = 6)           buffer DstBuf   { FLOAT_TYPE data_dst[];   };
+// rows-indexed state read (see push constant `state_rows`): each sequence's live
+// state row inside the 2D recurrent cache view. Unused when state_rows == 0, so in
+// that case the host binds any valid buffer here (it binds `data_state` itself).
+layout(binding = 7) readonly  buffer RowsBuf  { int data_rows[];        };
 
 #if !USE_SUBGROUP_ADD && !USE_SUBGROUP_CLUSTERED
 shared FLOAT_TYPE temp[SUBGROUP_SIZE];
@@ -102,8 +110,11 @@ void main() {
     const uint iq3 = seq_id / rq3;
 
     const uint state_size = S_V * S_V;
-    // input state holds s0 only [S_v, S_v, H, n_seqs]: per-seq stride is H*D.
-    const uint state_in_base       = (seq_id * H + head_id) * state_size;
+    // legacy: state is the gathered [S_v, S_v, H, n_seqs] form, per-seq stride H*D
+    // rows:   state is the 2D cache view, this seq's live state at row data_rows[seq]
+    //         (head head_id occupies [head_id*state_size, +state_size) inside that row)
+    const uint state_row_in  = (state_rows != 0u) ? uint(data_rows[seq_id]) : seq_id;
+    const uint state_in_base = (state_row_in * H + head_id) * state_size;
     // output state layout per slot: same per-(seq,head) offset as the single-slot case.
     const uint state_out_base      = (seq_id * H + head_id) * state_size;
     const uint state_size_per_snap = state_size * H * n_seqs;
