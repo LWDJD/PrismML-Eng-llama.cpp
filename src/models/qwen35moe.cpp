@@ -451,8 +451,16 @@ ggml_tensor * llama_model_qwen35moe::graph::build_layer_attn_linear(
     //   n_rs_seq == 0 -> plain decode: rows read + in-place state update (no copy at all)
     static const bool gdn_state_rows_env = getenv("GGML_GDN_STATE_GATHER") == nullptr;
 
+    // exp/gdn-rows-vk: the in-place variant (state_rows == 2) is NOT enabled from the
+    // graph. Writing the new state into the cache tensor itself creates an aliasing
+    // hazard with the graph's other in-place writers on that same tensor (the rs_zero
+    // clear and the extra-state relocation inside build_rs_cache_view), which shows up
+    // as a nondeterministic PPL change (4.5593 -> 4.99/5.38). The backend/shader support
+    // is kept for reference but is unreachable. See:
+    //   * rows read only  -> safe, but ring-only (needs n_rs_seq > 0, i.e. speculation)
+    //   * in-place write  -> needs an explicit ordering fix before it can be used
     const bool gdn_use_rows = gdn_state_rows_env && gdn_state_rows_dev_ok &&
-                              (cparams.n_rs_seq > 0 || gdn_inplace_dev_ok);
+                              cparams.n_rs_seq > 0;
 
     ggml_tensor * state;
     if (gdn_use_rows) {
