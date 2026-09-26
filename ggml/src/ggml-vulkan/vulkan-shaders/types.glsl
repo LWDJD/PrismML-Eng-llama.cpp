@@ -1543,19 +1543,17 @@ const uvec2 iq2s_grid_const[1024] = {
     uvec2(0x082b082b, 0x2b2b2b2b), uvec2(0x082b2b08, 0x2b2b2b2b), uvec2(0x2b082b08, 0x2b2b2b2b), uvec2(0x2b2b2b2b, 0x2b2b2b2b)
 };
 
-shared uvec2 iq2s_grid[1024];
+// ==== exp/iq-lds-tip: grid out of LDS (same fix as exp/iq-lds on the older snapshot) ====
+// The 8 KB per-workgroup shared grid is suspected to cap residency. Read the table
+// straight from the constant table instead of copying it into shared memory.
+#define iq2s_grid iq2s_grid_const
 
 #define NEEDS_INIT_IQ_SHMEM
 void init_iq_shmem(uvec3 wgsize)
 {
-    // copy the table into shared memory and sync
-    [[unroll]] for (uint i = 0; i < iq2s_grid.length(); i += wgsize.x) {
-        if (iq2s_grid.length() % wgsize.x == 0 || i + gl_LocalInvocationIndex.x < iq2s_grid_const.length()) {
-            iq2s_grid[i + gl_LocalInvocationIndex.x] = iq2s_grid_const[i + gl_LocalInvocationIndex.x];
-        }
-    }
-    barrier();
+    // grid read straight from the constant table; nothing to copy into LDS
 }
+// ==== end ====
 
 #define QUANT_K QUANT_K_IQ2_S
 #define QUANT_R QUANT_R_IQ2_S
