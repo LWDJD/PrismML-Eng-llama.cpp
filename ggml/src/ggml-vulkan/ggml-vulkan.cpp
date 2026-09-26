@@ -5253,7 +5253,24 @@ static void ggml_vk_load_shaders(vk_device& device, vk_pipeline requested) {
         rm_stdq = 2;
         rm_stdq_int = 2;
     }
+    // NUM_ROWS used by the IQ* mul_mat_vec pipelines.
+    //
+    // Historically 2*rm_kq (= 4 on RDNA). That was tuned while the IQ2_S 1024-entry lookup
+    // table still lived in workgroup memory (LDS), where the 8 KB per workgroup capped
+    // residency at ~4 workgroups and the shader needed a larger row block to amortise.
+    // Once the table is read straight from the constant table (LDS -> 0) residency stops
+    // being LDS-bound, and the smaller row block wins.
+    //
+    // Measured on AMD Radeon 880M (gfx1150, RDNA3, subgroup 64) / Qwen3.6-35B-A3B IQ2_M,
+    // -p 0 -n 32 -r 3, interleaved A/B/A/B/A:
+    //   rm_iq 4 -> 31.22 t/s (30.82 / 31.41 / 31.42)
+    //   rm_iq 2 -> 32.66 t/s (32.16 / 33.15)          = +4.6%
+    // Per-op (GGML_VK_PERF_LOGGER), all IQ2_S MUL_MAT_VEC/MUL_MAT_ID_VEC: -12% .. -30%,
+    // while iq3_s (driven by rm_kq) and q4_K/q5_K are unchanged - a clean control.
     uint32_t rm_iq = 2 * rm_kq;
+    if (device->vendor_id == VK_VENDOR_ID_AMD && device->architecture != AMD_GCN) {
+        rm_iq = 2;
+    }
 
     // Row-blocking (NUM_ROWS) drives how many independent weight loads a thread can keep in
     // flight: each of the NUM_ROWS rows is accumulated in a separate unrolled iteration.
@@ -5271,6 +5288,7 @@ static void ggml_vk_load_shaders(vk_device& device, vk_pipeline requested) {
                 rm_kq   = v;
                 rm_iq   = v;
                 GGML_LOG_INFO("ggml_vk_load_shaders: DMMV NUM_ROWS override -> %u (rm_stdq/rm_kq/rm_iq)\n", v);
+                fprintf(stderr, "[DMMV] NUM_ROWS override -> %u\n", v);
             }
         }
     }
@@ -5295,6 +5313,9 @@ static void ggml_vk_load_shaders(vk_device& device, vk_pipeline requested) {
         GGML_LOG_INFO("ggml_vk_load_shaders: DMMV subgroup override -> %u (device subgroup_size=%u, min=%u, max=%u, control=%d)\n",
                       subgroup_size, device->subgroup_size, device->subgroup_min_size, device->subgroup_max_size,
                       (int) device->subgroup_size_control);
+        fprintf(stderr, "[DMMV] subgroup override -> %u (device %u, min %u, max %u, control %d)\n",
+                subgroup_size, device->subgroup_size, device->subgroup_min_size, device->subgroup_max_size,
+                (int) device->subgroup_size_control);
     }
     const uint32_t subgroup_size16 = std::max(subgroup_size, 16u);
 
