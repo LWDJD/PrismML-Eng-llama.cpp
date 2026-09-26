@@ -2638,7 +2638,8 @@ extern "C" {
             struct ggml_tensor  * g,
             struct ggml_tensor  * beta,
             struct ggml_tensor  * states,
-            struct ggml_tensor  * rows);
+            struct ggml_tensor  * rows,
+            int64_t               rs_head);
 
     // fold the per-head gate activations into a gated_delta_net op (scalar gate only):
     //   beta -> sigmoid(beta),  g -> a[h] * softplus(g + dt_bias[h])

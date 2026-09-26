@@ -37,9 +37,13 @@ layout(push_constant) uniform Parameters {
     //       snapshot region of the output (the caller copies it back).
     //   1 = rows: 2D cache view, this seq's live state read at row data_rows[seq],
     //       new state still written to the output snapshot region (ring path).
-    //   2 = in-place: same rows read, but the new state is written straight back to
-    //       the same cache row. The output then carries attention scores only.
+    //   2 = in-place: same rows read, but the new state is written into the cache at row
+    //       rs_head + seq -- NOT necessarily the row it was read from, because a fresh
+    //       sequence reads a zeroed scratch cell and writes its live one. Output carries
+    //       attention scores only.
     uint state_rows;
+    // in-place (mode 2) destination: cache row of seq 0
+    uint rs_head;
 };
 
 layout(binding = 0) readonly  buffer QBuf     { FLOAT_TYPE data_q[];     };
@@ -198,10 +202,12 @@ void main() {
     }
 
     if (state_rows == 2u) {
-        // in-place: the new state goes straight back to the row we read it from, so the
-        // caller needs neither a gather before the op nor a copy after it.
+        // in-place: the updated state goes into the cache at row rs_head + seq, which is
+        // not necessarily the row it was read from, so read and write stay separate.
+        const uint row_out   = rs_head + seq_id;
+        const uint base_out  = (row_out * H + head_id) * state_size;
         [[unroll]] for (uint r = 0; r < ROWS_PER_LANE; r++) {
-            data_state[state_in_base + col * S_V + r * LANES_PER_COLUMN + lane] = s_shard[r];
+            data_state[base_out + col * S_V + r * LANES_PER_COLUMN + lane] = s_shard[r];
         }
     } else if (K == 1u) {
         [[unroll]] for (uint r = 0; r < ROWS_PER_LANE; r++) {

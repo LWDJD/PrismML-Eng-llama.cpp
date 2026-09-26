@@ -1870,9 +1870,15 @@ struct vk_op_gated_delta_net_push_constants {
     uint32_t neq1, rq3;
     float scale;
     uint32_t K;
-    // exp/gdn-rows-vk: 1 when src[6] is present and `states` is the raw 2D recurrent
-    // cache view (each seq's live state at row src[6]->data[seq]).
+    // exp/gdn-rows-vk: how src[6] / `states` are interpreted.
+    //   0 = legacy gathered state
+    //   1 = rows: 2D cache view, state read at src[6]->data[seq], new state written to
+    //       the output snapshot region
+    //   2 = in-place: same read, new state written into the cache at row rs_head + seq
+    //       (NOT necessarily the row it was read from), output = attention only
     uint32_t state_rows;
+    // in-place (mode 2) destination: cache row of seq 0
+    uint32_t rs_head;
 };
 
 struct vk_op_ssm_scan_push_constants {
@@ -12971,6 +12977,8 @@ static void ggml_vk_gated_delta_net(ggml_backend_vk_context * ctx, vk_context& s
     // path we simply alias the state buffer there to keep the descriptor set well-formed.
     const bool     rows_read   = (dst->src[6] != nullptr);
     const uint32_t rows_mode   = rows_read ? (K == 0 ? 2u : 1u) : 0u;
+    // in-place destination: cache row rs_head + seq (op param 1)
+    const uint32_t rs_head     = rows_mode == 2u ? (uint32_t) ggml_get_op_params_i32(dst, 1) : 0u;
     vk_subbuffer   rows_buf    = rows_read ? ggml_vk_tensor_subbuffer(ctx, dst->src[6]) : src_buf[5];
 
     const uint32_t sq1 = (uint32_t)(src_q->nb[1] / sizeof(float));
@@ -12995,7 +13003,8 @@ static void ggml_vk_gated_delta_net(ggml_backend_vk_context * ctx, vk_context& s
         neq1, rq3,
         scale,
         K,
-        rows_mode
+        rows_mode,
+        rs_head
     };
 
     // binding order: 0..5 = src[0..5], 6 = dst, 7 = rows

@@ -567,7 +567,7 @@ ggml_tensor * llm_build_delta_net_base::build_recurrent_attn(
             ggml_tensor * gg_ip = raw_ip ? gdn_raw_alpha : g;
             ggml_tensor * bb_ip = raw_ip ? gdn_raw_beta  : b;
 
-            ggml_tensor * gdn_ip = ggml_gated_delta_net_rows_inplace(ctx0, q, k, v, gg_ip, bb_ip, s, state_rows);
+            ggml_tensor * gdn_ip = ggml_gated_delta_net_rows_inplace(ctx0, q, k, v, gg_ip, bb_ip, s, state_rows, kv_head);
             if (raw_ip) {
                 ggml_gated_delta_net_set_raw_gates(gdn_ip, gdn_raw_dt_bias, gdn_raw_a);
             }

@@ -6431,7 +6431,8 @@ struct ggml_tensor * ggml_gated_delta_net_rows_inplace(
         struct ggml_tensor  * g,
         struct ggml_tensor  * beta,
         struct ggml_tensor  * states,
-        struct ggml_tensor  * rows) {
+        struct ggml_tensor  * rows,
+        int64_t               rs_head) {
     GGML_ASSERT(ggml_is_contiguous_rows(q));
     GGML_ASSERT(ggml_is_contiguous_rows(k));
     GGML_ASSERT(ggml_is_contiguous_rows(v));
@@ -6465,6 +6466,10 @@ struct ggml_tensor * ggml_gated_delta_net_rows_inplace(
 
     // K = 0 marks the in-place variant (no snapshots are produced)
     ggml_set_op_params_i32(result, 0, 0);
+    // op param 1: cache row the updated state is written to for seq 0. The read row
+    // comes from `rows[i]`, which is NOT necessarily the same cell (a fresh sequence
+    // reads from a zeroed scratch cell and writes to its live one), so both are needed.
+    ggml_set_op_params_i32(result, 1, (int32_t) rs_head);
 
     result->op     = GGML_OP_GATED_DELTA_NET;
     result->src[0] = q;
