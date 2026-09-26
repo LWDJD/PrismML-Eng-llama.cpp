@@ -1870,6 +1870,9 @@ struct vk_op_gated_delta_net_push_constants {
     uint32_t neq1, rq3;
     float scale;
     uint32_t K;
+    // exp/gdn-rows-vk: 1 when src[6] is present and `states` is the raw 2D recurrent
+    // cache view (each seq's live state at row src[6]->data[seq]).
+    uint32_t state_rows;
 };
 
 struct vk_op_ssm_scan_push_constants {
@@ -6033,8 +6036,9 @@ static void ggml_vk_load_shaders(vk_device& device, vk_pipeline requested) {
             const std::array<uint32_t, 3> wg_denoms = {1u, 1u, cols_per_wg};
 
             for (uint32_t kda = 0; kda < 2; kda++) {
+                // 8 bindings: src[0..5], dst, rows (exp/gdn-rows-vk)
                 ggml_vk_create_pipeline(device, device->pipeline_gated_delta_net[si][kda],
-                    gdn_names[si][kda], gdn_len, gdn_data, "main", 7, sizeof(vk_op_gated_delta_net_push_constants),
+                    gdn_names[si][kda], gdn_len, gdn_data, "main", 8, sizeof(vk_op_gated_delta_net_push_constants),
                     wg_denoms, {S_V, kda, device->subgroup_size, lanes_per_column}, 1, true, use_subgroup_ops, device->subgroup_size);
             }
         }
@@ -12958,6 +12962,14 @@ static void ggml_vk_gated_delta_net(ggml_backend_vk_context * ctx, vk_context& s
         src_buf[i] = ggml_vk_tensor_subbuffer(ctx, dst->src[i]);
     }
 
+    // exp/gdn-rows-vk: rows mode. src[6] (I32, n_seqs) carries the recurrent cache row
+    // holding each sequence's live state; `states` (src[5]) is then the raw 2D cache
+    // view instead of a gathered [S_v, S_v, H, n_seqs] tensor. The shader never reads
+    // the buffer (binding 7) unless the flag is set, so in the legacy path we simply
+    // alias the state buffer there to keep the descriptor set well-formed.
+    const bool state_rows_mode = (dst->src[6] != nullptr);
+    vk_subbuffer rows_buf = state_rows_mode ? ggml_vk_tensor_subbuffer(ctx, dst->src[6]) : src_buf[5];
+
     const uint32_t sq1 = (uint32_t)(src_q->nb[1] / sizeof(float));
     const uint32_t sq2 = (uint32_t)(src_q->nb[2] / sizeof(float));
     const uint32_t sq3 = (uint32_t)(src_q->nb[3] / sizeof(float));
@@ -12979,11 +12991,13 @@ static void ggml_vk_gated_delta_net(ggml_backend_vk_context * ctx, vk_context& s
         sb1, sb2, sb3,
         neq1, rq3,
         scale,
-        K
+        K,
+        (uint32_t) (state_rows_mode ? 1 : 0)
     };
 
+    // binding order: 0..5 = src[0..5], 6 = dst, 7 = rows
     ggml_vk_dispatch_pipeline(ctx, subctx, pipeline,
-        {src_buf[0], src_buf[1], src_buf[2], src_buf[3], src_buf[4], src_buf[5], dst_buf},
+        {src_buf[0], src_buf[1], src_buf[2], src_buf[3], src_buf[4], src_buf[5], dst_buf, rows_buf},
         pc, { H, n_seqs, S_v });
 }
 
@@ -18723,9 +18737,16 @@ static bool ggml_backend_vk_device_supports_op(ggml_backend_dev_t dev, const ggm
             return op->src[0]->type == GGML_TYPE_F32 && op->type == GGML_TYPE_F32 && op->src[0]->ne[0] == 64;
         case GGML_OP_GATED_DELTA_NET:
             {
-                // rows-indexed state read (src[6]) not implemented on Vulkan yet
+                // exp/gdn-rows-vk: rows-indexed state read (src[6]) is supported now.
+                // src[6] is I32 with one cache-row index per sequence; src[5] is then
+                // the raw 2D cache view (D = S_v*S_v*H wide rows).
                 if (op->src[6] != nullptr) {
-                    return false;
+                    if (op->src[6]->type != GGML_TYPE_I32 || op->src[6]->ne[0] != op->src[2]->ne[3]) {
+                        return false;
+                    }
+                    if (op->src[5]->ne[0] != op->src[2]->ne[0] * op->src[2]->ne[0] * op->src[2]->ne[1]) {
+                        return false;
+                    }
                 }
                 // raw gates (ggml_gated_delta_net_set_raw_gates): beta and g arrive
                 // pre-activation and need beta = sigmoid(beta) and
